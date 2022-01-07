@@ -1,65 +1,50 @@
 #!/usr/bin/env python3
-
-import time, colorsys, sys, os
-import pickle
+import time, colorsys, sys, os, pickle, itertools
 import numpy as np
-import itertools
-import ST7735
-try:
-    # Transitional fix for breaking change in LTR559
-    from ltr559 import LTR559
-    ltr559 = LTR559()
-except ImportError:
-    import ltr559
 
+import ST7735
 from bme280 import BME280
 from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError, SerialTimeoutError
 from enviroplus import gas
-from subprocess import PIPE, Popen
+from ltr559 import LTR559
+
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 from fonts.ttf import RobotoMedium as UserFont
 
 INTEGRATORS_FILENAME = "integrators.pyobj"
+LOG_FILENAME = "3.txt"
 
+def Enviro_plus():
+    ltr559 = LTR559() # light
+    ltr559.set_light_options(gain=96)
+    ltr559.set_light_integration_time_ms(400)
+    bme280 = BME280() # temp etc
+    pms5003 = PMS5003() # particulates
+    time.sleep(1.0) # seems like delicate stuff, the thing above
 
-ltr559.set_light_options(gain=96)
-ltr559.set_light_integration_time_ms(400)
+    while True:
+     yield (ltr559.get_proximity(),
+            ltr559.get_lux(),
+            bme280.get_temperature(),
+            bme280.get_humidity(),
+            bme280.get_pressure(),
+            pms5003.read(), # pms5003.ChecksumMismatchError
+            gas.read_all())
 
-# BME280 temperature/pressure/humidity sensor
-bme280 = BME280()
-
-# PMS5003 particulate sensor
-pms5003 = PMS5003()
-time.sleep(1.0)
-
-# Create ST7735 LCD display class
-st7735 = ST7735.ST7735(
-    port=0,
-    cs=1,
-    dc=9,
-    backlight=12,
-    rotation=270,
-    spi_speed_hz=10000000
-)
-
-# Initialize display
+    
+# Create display instance
+st7735 = ST7735.ST7735(port=0, cs=1, dc=9, backlight=12, rotation=270,
+                       spi_speed_hz=10000000)
 st7735.begin()
-
-WIDTH = st7735.width
-HEIGHT = st7735.height
-
-# Set up canvas and font
+WIDTH, HEIGHT = st7735.width, st7735.height
 img = Image.new('RGB', (WIDTH, HEIGHT), color=(0, 0, 0))
 draw = ImageDraw.Draw(img)
 font = ImageFont.truetype(UserFont, 18)
-x_offset = 2
-y_offset = 2
 
-
-# Displays all the text on the 0.96" LCD
 def display_everything(values, bars = None, bg=(0, 0, 0)):
+    x_offset, y_offset = 2, 2
     limits = {'temp': [18, 20, 23, 26],
               'hum': [20, 35, 50, 65],
               'pres' : [980, 1005, 1020, 1030],
@@ -82,7 +67,7 @@ def display_everything(values, bars = None, bg=(0, 0, 0)):
         message = "{} {:.1f}".format(variable[0], value)
         lim = limits[variable]
         rgb = palette[0]
-        for j in range(len(lim)):
+        for j in range(len(lim)): # umm... FIXME
             if value > lim[j]:
                 rgb = palette[j + 1]
         draw.text((x, y), message, font=font, fill=rgb)
@@ -115,10 +100,9 @@ class Anom:
         self.update(v)
         return self.z2(v)
     
-xs = []
-v_lngs = []
 
 if os.path.isfile(INTEGRATORS_FILENAME):
+        print("Reading integrators.")
         a_act, a_env, a_gpm, a_lng = pickle.load(open(INTEGRATORS_FILENAME, 'rb'))
 else:
         a_act = Anom(6, .001) # "nearby activity" half time about 10 minutes (sample per sec)
@@ -126,15 +110,13 @@ else:
         a_gpm = Anom(6, .00005) # slow-moving pres, env and pms; five hours
         a_lng = Anom(10, .0001) # half time about five days (sample per minute)
 
-for i in itertools.count():
-    proximity = ltr559.get_proximity()
-    lux = ltr559.get_lux()
-    temp = bme280.get_temperature()
-    humidity = bme280.get_humidity()
-    pressure = bme280.get_pressure()
-    pms_obj = pms5003.read()
-    gas_obj = gas.read_all()
+logfile = open(LOG_FILENAME, "a")
+xs = []
+v_lngs = []
 
+for i, measurements in enumerate(Enviro_plus()):
+    proximity, lux, temp, humidity, pressure, pms_obj, gas_obj = measurements
+    
     # x are for logging and display
     x_gas = tuple([7 - np.log10(x) for x in (gas_obj.oxidising, gas_obj.reducing, gas_obj.nh3)])
     x_pms = tuple([pms_obj.pm_ug_per_m3(x) for x in (1.0, 2.5, 10.0)])
@@ -147,7 +129,7 @@ for i in itertools.count():
     v_lgt = np.array((np.log(lux+.01),))
 
     # Display
-    if i>0: # First reading bogus, skip it
+    if i>1: # First reading(s) bogus, skip them
         z_act = a_act.uz2(np.concatenate((v_lgt, v_env, v_gas)))
         z_env = a_env.uz2(np.concatenate((v_env, v_gas)))
         z_gpm = a_gpm.uz2(np.concatenate((v_prs, v_pms, v_env)))
@@ -157,6 +139,7 @@ for i in itertools.count():
             #print(np.concatenate((v_lgt, v_env, v_gas)))
             #print(a_act.N, a_act.mean)
         # z with mean 1, sd \appr .6, so 2 is below two-sigma
+        # properly, this shoudl still take df in, do a chisq thing
         def barify(z): return int(min(255, 256*max(0, z-2)/4)) 
             
         display_everything({'temp': temp, 'hum' : humidity, 'pres' : pressure,
@@ -172,16 +155,25 @@ for i in itertools.count():
         xs.append(x) 
         v_lngs.append(np.concatenate((v_gas, v_env, v_prs, v_pms, v_lgt)))
 
-    if i % 60 == 0 and i>0: # Skip the round with no data
+    if i % 60 == 0 and i>1: # Skip the round with no data
         xm = np.mean(xs, 0); xs = []
         v_lng = np.mean(v_lngs, 0); v_lngs = []
         z_lng = a_lng.uz2(v_lng)
-        print("%d %5.2f %6.2f %4.2f %8.2f %6.2f %7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.2f %5.2f" %
-                  (tuple(xm) + (z_lng,)))
-        sys.stdout.flush()
+        logfile.write("%d %5.2f %6.2f %4.2f %8.2f %6.2f %7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.2f %5.2f\n" %
+                      (tuple(xm) + (z_lng,)))
+        logfile.flush()
 
-    if i % 1800 == 0:
+    if i % (5*60) == 0:
         pickle.dump((a_act, a_env, a_gpm, a_lng), open(INTEGRATORS_FILENAME, 'wb'))
         
     time.sleep(1.0)
                     
+# TODO
+# - PMS error
+# - a bit more integrator saving, maybe to a shelve
+# - generators
+# - async
+# - log file
+#      - header
+#      - a bit of rotation maybe, with automatic names?
+#      - .3g format?
