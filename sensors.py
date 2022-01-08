@@ -16,45 +16,6 @@ from fonts.ttf import RobotoMedium as UserFont
 INTEGRATORS_FILENAME = "integrators.pyobj"
 LOG_FILENAME = "3.txt"
 
-# Create display instance
-st7735 = ST7735.ST7735(port=0, cs=1, dc=9, backlight=12, rotation=270,
-                       spi_speed_hz=10000000)
-st7735.begin()
-WIDTH, HEIGHT = st7735.width, st7735.height
-img = Image.new('RGB', (WIDTH, HEIGHT), color=(0, 0, 0))
-draw = ImageDraw.Draw(img)
-font = ImageFont.truetype(UserFont, 18)
-
-def display_everything(values, bars = None, bg=(0, 0, 0)):
-    x_offset, y_offset = 2, 2
-    limits = {'temp': [18, 20, 23, 26],
-              'hum': [20, 35, 50, 65],
-              'pres' : [980, 1005, 1020, 1030],
-              'pms010': [2, 5, 10, 20],
-              'pms025': [2, 5, 10, 20],
-              'pms100': [2, 5, 10, 20] }
-    palette = [(0, 0, 255), (0, 255, 255), (0, 255, 0), (255, 255, 0), (255, 0, 0)]
-    draw.rectangle((0, 0, WIDTH, HEIGHT), bg)
-    if bars is not None:
-        tri = HEIGHT//3
-        draw.rectangle((WIDTH-20, 0*tri, WIDTH, 1*tri), bars[0])
-        draw.rectangle((WIDTH-20, 1*tri, WIDTH, 2*tri), bars[1])
-        draw.rectangle((WIDTH-20, 2*tri, WIDTH, 3*tri), bars[2])
-                
-    column_count = 2
-    row_count = (len(values) / column_count)
-    for i, (variable, value) in enumerate(values.items()):
-        x = x_offset + ((WIDTH // column_count) * (i // row_count))
-        y = y_offset + ((HEIGHT / row_count) * (i % row_count))
-        message = "{} {:.1f}".format(variable[0], value)
-        lim = limits[variable]
-        rgb = palette[0]
-        for j in range(len(lim)): # umm... FIXME
-            if value > lim[j]:
-                rgb = palette[j + 1]
-        draw.text((x, y), message, font=font, fill=rgb)
-    st7735.display(img)
-
 class Anom:
     def __init__(self, dim, decay, creg=None):
         self.k = 1 - decay
@@ -78,11 +39,55 @@ class Anom:
         # That is, N(1, sqrt(2/k)*^2) for large k
         z2 = np.einsum("i,ij,j", v - mean, iC, v - mean) / self.dim 
         return z2
-    def uz2(self, v):
+    def __call__(self, v):
         self.update(v)
         return self.z2(v)
 
-async def Enviro_plus(interval = 1.0):
+async def display(q_display):
+    # Create display instance
+    st7735 = ST7735.ST7735(port=0, cs=1, dc=9, backlight=12, rotation=270,
+                           spi_speed_hz=10000000)
+    st7735.begin()
+    WIDTH, HEIGHT = st7735.width, st7735.height
+    img = Image.new('RGB', (WIDTH, HEIGHT), color=(0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(UserFont, 18)
+    x_offset, y_offset = 2, 2
+    limits = {'temp': [18, 20, 23, 26],
+              'hum': [20, 35, 50, 65],
+              'pres' : [980, 1005, 1020, 1030],
+              'pms010': [2, 5, 10, 20],
+              'pms025': [2, 5, 10, 20],
+              'pms100': [2, 5, 10, 20] }
+    palette = [(0, 0, 255), (0, 255, 255), (0, 255, 0), (255, 255, 0), (255, 0, 0)]
+
+    while True:
+        content = await q_display.get()
+        values = content['variables']
+        bg = content.get('bg', (0, 0, 0))
+        bars = content.get('bars')
+        draw.rectangle((0, 0, WIDTH, HEIGHT), bg)
+        if bars is not None:
+            tri = HEIGHT//3
+            draw.rectangle((WIDTH-20, 0*tri, WIDTH, 1*tri), bars[0])
+            draw.rectangle((WIDTH-20, 1*tri, WIDTH, 2*tri), bars[1])
+            draw.rectangle((WIDTH-20, 2*tri, WIDTH, 3*tri), bars[2])
+
+        column_count = 2
+        row_count = (len(values) / column_count)
+        for i, (variable, value) in enumerate(values.items()):
+            x = x_offset + ((WIDTH // column_count) * (i // row_count))
+            y = y_offset + ((HEIGHT / row_count) * (i % row_count))
+            message = "{} {:.1f}".format(variable[0], value)
+            lim = limits[variable]
+            rgb = palette[0]
+            for j in range(len(lim)): # umm... FIXME
+                if value > lim[j]:
+                    rgb = palette[j + 1]
+            draw.text((x, y), message, font=font, fill=rgb)
+        st7735.display(img)
+
+async def measure(q_measure, interval = 1.0):
     ltr559 = LTR559() # light
     ltr559.set_light_options(gain=96)
     ltr559.set_light_integration_time_ms(400)
@@ -90,16 +95,16 @@ async def Enviro_plus(interval = 1.0):
     pms5003 = PMS5003(); time.sleep(1.0) # particulates; seems somewhat delicate
     t_sync = time.time()
     while True:
-        yield (time.time(),
+        await q_measure.put((
+               time.time(),
                ltr559.get_proximity(),
                ltr559.get_lux(),
                bme280.get_temperature(),
                bme280.get_humidity(),
                bme280.get_pressure(),
                pms5003.read(), # pms5003.ChecksumMismatchError
-               gas.read_all())
+               gas.read_all()))
         await asyncio.sleep(interval - (time.time() - t_sync) % interval)
-
 
 if os.path.isfile(INTEGRATORS_FILENAME):
         print("Reading integrators.")
@@ -110,15 +115,30 @@ else:
         a_gpm = Anom(6, .00005) # slow-moving pres, env and pms; five hours
         a_lng = Anom(10, .0001) # half time about five days (sample per minute)
 
-logfile = open(LOG_FILENAME, "a")
-envp = Enviro_plus()
+async def avg_logger(q_logger, a_lng):
+    logfile = open(LOG_FILENAME, "a")
+    while True:
+        xs, v_lngs = [], []
+        for i in range(60):
+            x, v = await q_logger.get()
+            xs.append(x); v_lngs.append(v)
+        xm = np.mean(xs, 0)
+        v_lng = np.mean(v_lngs, 0)
+        z_lng = a_lng(v_lng)
+        logfile.write("%d %5.2f %6.2f %4.2f %8.2f %6.2f %7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.2f %5.2f\n" %
+                          (tuple(xm) + (z_lng,)))
+        logfile.flush()                
 
-async def main():
-    xs = []
-    v_lngs = []
+async def integrator_saver(integrators):
+    while True:
+        await asyncio.sleep(5 * 60)
+        pickle.dump(integrators, open(INTEGRATORS_FILENAME, 'wb'))
+        
+async def loop0(q_measure, q_display, q_logger):
     for i in itertools.count():
-        t0, proximity, lux, temp, humidity, pressure, pms_obj, gas_obj = await envp.asend(None)
-
+        t0, proximity, lux, temp, humidity, pressure, pms_obj, gas_obj = await q_measure.get()
+        if i<2: continue # First reading(s) bogus, skip them. i<1 likely enough.
+        
         # x are for logging and display
         x_gas = tuple([7 - np.log10(x) for x in (gas_obj.oxidising, gas_obj.reducing, gas_obj.nh3)])
         x_pms = tuple([pms_obj.pm_ug_per_m3(x) for x in (1.0, 2.5, 10.0)])
@@ -131,54 +151,47 @@ async def main():
         v_lgt = np.array((np.log(lux+.01),))
 
         # Display
-        if i>1: # First reading(s) bogus, skip them
-            z_act = a_act.uz2(np.concatenate((v_lgt, v_env, v_gas)))
-            z_env = a_env.uz2(np.concatenate((v_env, v_gas)))
-            z_gpm = a_gpm.uz2(np.concatenate((v_prs, v_pms, v_env)))
-            if (True):
-                pass
-                # print(time.time())
-                # print(v_lgt, v_env, v_gas)
-                # print(z_act, z_env, z_gpm)
-                # print(np.linalg.eigvals(a_act.SS))
-                # print(np.concatenate((v_lgt, v_env, v_gas)))
-                # print(a_act.N, a_act.mean)
-            # z with mean 1, sd \appr .6, so 2 is below two-sigma
-            # properly, this shoudl still take df in, do a chisq thing
-            def barify(z): return int(min(255, 256*max(0, z-2)/4)) 
-
-            display_everything({'temp': temp, 'hum' : humidity, 'pres' : pressure,
-                                'pms010': x_pms[0], 'pms025': x_pms[1], 'pms100': x_pms[2] },
-                               bars = ((barify(z_act), 0, 0),
+        z_act = a_act(np.concatenate((v_lgt, v_env, v_gas)))
+        z_env = a_env(np.concatenate((v_env, v_gas)))
+        z_gpm = a_gpm(np.concatenate((v_prs, v_pms, v_env)))
+        
+        # z with mean 1, sd \appr .6, so 2 is below two-sigma
+        # properly, this shoudl still take df in, do a chisq thing
+        def barify(z): return int(min(255, 256*max(0, z-2)/4)) 
+        await q_display.put({'variables':
+                                 {'temp': temp, 'hum' : humidity, 'pres' : pressure,
+                                  'pms010': x_pms[0], 'pms025': x_pms[1], 'pms100': x_pms[2] },
+                             'bars' : ((barify(z_act), 0, 0),
                                        (0, barify(z_env), 0),
                                        (0, 0, barify(z_gpm))),
-                               bg  = (0, 0, 0)) #(255*(proximity>0), 0, 0))
+                             'bg' : (0, 0, 0)}) #(255*(proximity>0), 0, 0))
 
-            # Logging
-            x = np.array((t0, temp, pressure, humidity, lux, proximity) +
-                             x_gas + x_pms + (z_act,), 'float')
-            xs.append(x) 
-            v_lngs.append(np.concatenate((v_gas, v_env, v_prs, v_pms, v_lgt)))
+        # Logging
+        x = (t0, temp, pressure, humidity, lux, proximity) + x_gas + x_pms + (z_act,)
+        v = np.concatenate((v_gas, v_env, v_prs, v_pms, v_lgt))
+        await q_logger.put((np.array(x), v))
 
-        if i % 60 == 0 and i>1: # Skip the round with no data
-            xm = np.mean(xs, 0); xs = []
-            v_lng = np.mean(v_lngs, 0); v_lngs = []
-            z_lng = a_lng.uz2(v_lng)
-            logfile.write("%d %5.2f %6.2f %4.2f %8.2f %6.2f %7.3f %7.3f %7.3f %6.2f %6.2f %6.2f %5.2f %5.2f\n" %
-                          (tuple(xm) + (z_lng,)))
-            logfile.flush()
-
-        if i % (5*60) == 0 and i>1:
-            pickle.dump((a_act, a_env, a_gpm, a_lng), open(INTEGRATORS_FILENAME, 'wb'))
+async def main():
+    q_logger = asyncio.Queue()
+    q_measure = asyncio.Queue()
+    q_display = asyncio.Queue()
+    await asyncio.gather(loop0(q_measure, q_display, q_logger),
+                         measure(q_measure), 
+                         avg_logger(q_logger, a_lng),
+                         display(q_display),
+                         integrator_saver((a_act, a_env, a_gpm, a_lng)))
 
 asyncio.run(main())
 
 # TODO
+# - Integrators to local, they are in a funny place now.
+# - logger to 60 seconds instead of rounds
+# - take intervals and file names to parameters
 # - PMS error
-# - a bit more integrator saving, maybe to a shelve
-# - generators
-# - async
 # - log file
 #      - header
 #      - a bit of rotation maybe, with automatic names?
-#      - .3g format?
+#      - %#7.3g format?
+# - I/O to async: logfile and pickle write?
+# - exception handling, mainly KILL and C-c
+# - integrators to a shelve?
