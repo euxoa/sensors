@@ -59,7 +59,7 @@ async def display(q_display):
               'pms010': [0, 1, 2, 10, 25],
               'pms025': [0, 1, 2, 10, 25],
               'pms100': [0, 1, 2, 10, 25] }
-    palette = np.array([(0, 0, 255), (0, 180, 180), (0, 255, 0), (200, 200, 0), (255, 0, 0)])
+    palette = np.array([(220, 0, 220), (0, 50, 255), (50, 200, 50), (200, 200, 0), (255, 0, 0)])
 
     while True:
         content = await q_display.get()
@@ -68,7 +68,7 @@ async def display(q_display):
         bars = content.get('bars')
         draw.rectangle((0, 0, WIDTH, HEIGHT), bg)
         if bars is not None:
-            tri = HEIGHT//3
+            tri = HEIGHT//3 # FIXME: misses the quotient
             draw.rectangle((WIDTH-20, 0*tri, WIDTH, 1*tri), bars[0])
             draw.rectangle((WIDTH-20, 1*tri, WIDTH, 2*tri), bars[1])
             draw.rectangle((WIDTH-20, 2*tri, WIDTH, 3*tri), bars[2])
@@ -180,6 +180,10 @@ async def main():
 asyncio.run(main())
 
 # TODO
+# - list comprehensions -> generators, in many places
+# - the format string in logging, cut in half
+# - shorthand for npcomc and nparray
+# - the chisq df thing, requires scipy...
 # - Integrators to local, they are in a funny place now.
 # - logger to 60 seconds instead of rounds
 # - take intervals and file names to parameters
