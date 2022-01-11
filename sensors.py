@@ -53,13 +53,13 @@ async def display(q_display):
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(UserFont, 18)
     x_offset, y_offset = 2, 2
-    limits = {'temp': [18, 20, 23, 26],
-              'hum': [20, 35, 50, 65],
-              'pres' : [980, 1005, 1020, 1030],
-              'pms010': [2, 5, 10, 20],
-              'pms025': [2, 5, 10, 20],
-              'pms100': [2, 5, 10, 20] }
-    palette = [(0, 0, 255), (0, 255, 255), (0, 255, 0), (255, 255, 0), (255, 0, 0)]
+    limits = {'temp': [16, 19, 21.5, 24, 28],
+              'hum': [18, 28, 40, 55, 70],
+              'pres' : [970, 985, 1000, 1018, 1035],
+              'pms010': [0, 1, 2, 10, 25],
+              'pms025': [0, 1, 2, 10, 25],
+              'pms100': [0, 1, 2, 10, 25] }
+    palette = np.array([(0, 0, 255), (0, 180, 180), (0, 255, 0), (200, 200, 0), (255, 0, 0)])
 
     while True:
         content = await q_display.get()
@@ -72,7 +72,6 @@ async def display(q_display):
             draw.rectangle((WIDTH-20, 0*tri, WIDTH, 1*tri), bars[0])
             draw.rectangle((WIDTH-20, 1*tri, WIDTH, 2*tri), bars[1])
             draw.rectangle((WIDTH-20, 2*tri, WIDTH, 3*tri), bars[2])
-
         column_count = 2
         row_count = (len(values) / column_count)
         for i, (variable, value) in enumerate(values.items()):
@@ -80,10 +79,7 @@ async def display(q_display):
             y = y_offset + ((HEIGHT / row_count) * (i % row_count))
             message = "{} {:.1f}".format(variable[0], value)
             lim = limits[variable]
-            rgb = palette[0]
-            for j in range(len(lim)): # umm... FIXME
-                if value > lim[j]:
-                    rgb = palette[j + 1]
+            rgb = tuple([int(np.interp(value, lim, palette[:, i])) for i in (0, 1, 2)])
             draw.text((x, y), message, font=font, fill=rgb)
         st7735.display(img)
 
@@ -192,6 +188,8 @@ asyncio.run(main())
 #      - header
 #      - a bit of rotation maybe, with automatic names?
 #      - %#7.3g format?
+# - a small web server
+# - logging module for prints
 # - I/O to async: logfile and pickle write?
 # - exception handling, mainly KILL and C-c
 # - integrators to a shelve?
