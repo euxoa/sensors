@@ -91,15 +91,18 @@ async def measure(q_measure, interval = 1.0):
     pms5003 = PMS5003(); time.sleep(1.0) # particulates; seems somewhat delicate
     t_sync = time.time()
     while True:
-        await q_measure.put((
-               time.time(),
-               ltr559.get_proximity(),
-               ltr559.get_lux(),
-               bme280.get_temperature(),
-               bme280.get_humidity(),
-               bme280.get_pressure(),
-               pms5003.read(), # pms5003.ChecksumMismatchError
-               gas.read_all()))
+        try:
+            await q_measure.put((
+                   time.time(),
+                   ltr559.get_proximity(),
+                   ltr559.get_lux(),
+                   bme280.get_temperature(),
+                   bme280.get_humidity(),
+                   bme280.get_pressure(),
+                   pms5003.read(), # pms5003.ChecksumMismatchError
+                   gas.read_all()))
+        except pms5003.ChecksumMismatchError:
+            print("Checksum error from PMS5003 at ", time.asctime())
         await asyncio.sleep(interval - (time.time() - t_sync) % interval)
 
 if os.path.isfile(INTEGRATORS_FILENAME):
