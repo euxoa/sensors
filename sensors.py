@@ -4,7 +4,7 @@ import numpy as np
 
 import ST7735
 from bme280 import BME280
-from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError, SerialTimeoutError
+from pms5003 import PMS5003, ChecksumMismatchError as pmsChecksumMismatchError
 from enviroplus import gas
 from ltr559 import LTR559
 
@@ -99,9 +99,9 @@ async def measure(q_measure, interval = 1.0):
                    bme280.get_temperature(),
                    bme280.get_humidity(),
                    bme280.get_pressure(),
-                   pms5003.read(), # pms5003.ChecksumMismatchError
+                   pms5003.read(), # pms5003.ChecksmMismatchError
                    gas.read_all()))
-        except pms5003.ChecksumMismatchError:
+        except pmsChecksumMismatchError:
             print("Checksum error from PMS5003 at ", time.asctime())
         await asyncio.sleep(interval - (time.time() - t_sync) % interval)
 
