@@ -23,14 +23,19 @@ get_data <- function() {
 graph <- function (d, t0="2021-01-07 00:00:00")  
   d %>% mutate(
          light = log10(light+.01), prox = log10(prox),
-         #z = log10(z), zfast = log10(zfast), 
+         z = log10(z), zfast = log10(zfast), 
          G_nh3 = G_nh3 - mean(G_nh3), G_red = G_red - mean(G_red), G_ox = G_ox - mean(G_ox)) %>%
          #light=ewma(light, .1),
          #pm010 = ewma(pm010, .05), pm025 = ewma(pm025, .05), pm100 = ewma(pm100, .05)) %>%
   filter(row_number()>-1 & time > lubridate::as_datetime(t0, tz="EET")) %>%
   tidyr::pivot_longer(!time) %>%
   left_join(clr_tbl) %>%
+  filter(name2 != "prox") %>%
     ggplot(aes(x=time, y=value, color=I(clr))) + geom_line(alpha=.5, size=.3) +
       facet_grid(name2 ~ ., scales="free_y") + theme_minimal()
 
-
+d <- get_data(); graph(d, t0="2022-01-16 00:00:00")
+d %>% mutate(dp=c(diff(pressure), NA)) %>% filter(dp<5) %>% 
+  filter(time > lubridate::as_datetime("2022-01-24 12:00:00", tz="EET") & 
+           time < lubridate::as_datetime("2022-01-28 00:00:00", tz="EET")) %>% 
+  ggplot(aes(x=time, y=dp)) + geom_line()
